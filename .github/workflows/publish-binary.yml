@@ -1,0 +1,188 @@
+name: Publish Binary Draft
+
+# The code (like generate-release-body) will be taken from the tag version, not master
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: tag (ex. v0.8.3) to retrieve commit diff from
+        required: true
+      to:
+        description: tag (ex. v0.9.0) to generate release note and binaries from
+        required: true
+
+jobs:
+  ####### Building binaries #######
+  setup-scripts:
+    runs-on: bare-metal
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-tools
+          path: tools
+
+  build-binary:
+    needs: ["setup-scripts"]
+    runs-on: bare-metal
+    strategy:
+      matrix:
+        cpu: ["x86-64", "skylake", "znver3"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.to }}
+      - name: Build production moonbeam
+        run: |
+          # Build moonbeam
+          # (we don't use volumes because of ownership/permissions issues)
+          docker build \
+            --tag prod --no-cache \
+            --build-arg="COMMIT=${{ github.event.inputs.to }}" \
+            --build-arg="RUSTFLAGS=-C target-cpu=${{ matrix.cpu }}" \
+            - < docker/moonbeam-production.Dockerfile
+
+          # Copy moonbeam binary
+          docker rm -f dummy 2> /dev/null | true
+          docker create -ti --name dummy prod bash
+          docker cp dummy:/moonbeam/moonbeam moonbeam
+          docker rm -f dummy
+
+          # Cleanup
+          docker rmi prod
+
+      - name: Save parachain binary
+        run: |
+          mkdir -p build
+          cp moonbeam build/moonbeam-${{matrix.cpu}}
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{matrix.cpu}}
+          path: build/moonbeam-${{matrix.cpu}}
+
+  ####### Prepare the release draft #######
+
+  publish-draft-release:
+    runs-on: ubuntu-latest
+    needs: ["build-binary"]
+    outputs:
+      release_url: ${{ steps.create-release.outputs.html_url }}
+      asset_upload_url: ${{ steps.create-release.outputs.upload_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.to }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: build
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.10.0
+      - name: Download Original Tools
+        uses: actions/download-artifact@v4
+        with:
+          name: original-tools
+          path: original-tools
+      - name: Generate release body
+        id: generate-release-body
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: original-tools
+        run: |
+          mv ../build/moonbeam-x86-64 ../build/moonbeam 
+          yarn
+          yarn -s run ts-node github/generate-release-body.ts --owner "${{ github.repository_owner }}" --repo "$(basename ${{ github.repository }})" --from "${{ github.event.inputs.from }}" --to "${{ github.event.inputs.to }}" --srtool-report-folder '../build/' > ../body.md
+      - name: Create draft release
+        id: create-release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.to }}
+          release_name: Moonbeam ${{ github.event.inputs.to }}
+          body_path: body.md
+          draft: true
+
+  ####### Upload Binaries #######
+
+  upload-binaries:
+    runs-on: ubuntu-latest
+    needs: ["build-binary", "publish-draft-release"]
+    strategy:
+      matrix:
+        cpu: ["x86-64", "skylake", "znver3"]
+        node: ["moonbeam"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: build
+      - name: Upload moonbeam
+        uses: actions/upload-release-asset@v1
+        if: ${{ matrix.cpu == 'x86-64' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.publish-draft-release.outputs.asset_upload_url }}
+          asset_path: build/${{matrix.node}}-${{matrix.cpu}}
+          asset_name: ${{matrix.node}}
+          asset_content_type: application/octet-stream
+      - name: Upload moonbeam custom binary
+        uses: actions/upload-release-asset@v1
+        if: ${{ matrix.cpu != 'x86-64' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.publish-draft-release.outputs.asset_upload_url }}
+          asset_path: build/${{matrix.node}}-${{matrix.cpu}}
+          asset_name: ${{matrix.node}}-${{matrix.cpu}}
+          asset_content_type: application/octet-stream
+
+  ####### Publish Release Candidate Docker Image #######
+
+  docker-release-candidate:
+    runs-on: ubuntu-latest
+    needs: ["build-binary", "publish-draft-release"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.to }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: build
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.MBF_DOCKERHUB_USERNAME }}
+          password: ${{ secrets.MBF_DOCKERHUB_PASSWORD }}
+      - run: |
+          mv build/moonbeam-x86-64 build/moonbeam
+
+          DOCKER_IMAGE=moonbeamfoundation/moonbeam
+          COMMIT=`git rev-list -n 1 '${{ github.event.inputs.to }}'`
+          SHA=sha-${COMMIT::8}
+          echo using "${DOCKER_IMAGE}:${SHA} as base image"
+
+          TAG="${{ github.event.inputs.to }}-rc"
+
+          echo building "${DOCKER_IMAGE}:${TAG}"
+          docker build \
+            --build-arg DOCKER_IMAGE="$DOCKER_IMAGE" \
+            --build-arg SHA="$SHA" \
+            -f docker/moonbeam-release.Dockerfile \
+            -t "${DOCKER_IMAGE}:${TAG}" \
+            .
+
+          docker push "${DOCKER_IMAGE}:${TAG}"
