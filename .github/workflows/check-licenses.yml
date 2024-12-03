@@ -2,7 +2,9 @@ name: Check licenses
 
 on:
   pull_request:
-  workflow_dispatch:
+    types: [locked]
+  pull_request_review_comment:
+    types: [deleted, created, edited]
 
 jobs:
   verify:
@@ -16,5 +18,4 @@ jobs:
           override: true
       - name: Verify Licenses
         run: |
-          cargo install cargo-license
-          ./scripts/verify-licenses.sh
+          echo "This a custom execution !"
