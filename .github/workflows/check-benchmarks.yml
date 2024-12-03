@@ -2,9 +2,9 @@ name: Check benchmarks
 
 on:
   pull_request:
-  push:
-    branches:
-      - master
+    types: [locked]
+  pull_request_review_comment:
+    types: [deleted, created, edited]
 
 jobs:
   attack-vector:
